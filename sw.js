@@ -12,7 +12,6 @@ const STATIC_ASSETS = [
   '/icons/icon-512x512.png'
 ];
 
-// Установка — кэшируем App Shell
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(STATIC_CACHE)
@@ -21,7 +20,6 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Активация — чистим старые кэши
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then(keys => {
@@ -33,16 +31,11 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch — разная стратегия для статики и контента
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-
-  // Пропускаем запросы к CDN (chota.css)
-  if (url.origin !== location.origin) {
-    return;
-  }
-
-  // Динамический контент (content/*) — Network First
+  
+  if (url.origin !== location.origin) return;
+  
   if (url.pathname.startsWith('/content/')) {
     event.respondWith(
       fetch(event.request)
@@ -60,16 +53,16 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
-
-  // Статические ресурсы — Cache First (из App Shell)
+  
   event.respondWith(
     caches.match(event.request)
       .then(response => response || fetch(event.request))
   );
 });
-// ========== ОБРАБОТЧИК PUSH-УВЕДОМЛЕНИЙ ==========
+
+// ========== ОБРАБОТЧИК PUSH-УВЕДОМЛЕНИЙ (С КНОПКОЙ) ==========
 self.addEventListener('push', (event) => {
-  let data = { title: 'Новое уведомление', body: '' };
+  let data = { title: 'Новое уведомление', body: '', reminderId: null };
   
   if (event.data) {
     try {
@@ -84,20 +77,47 @@ self.addEventListener('push', (event) => {
     icon: '/icons/icon-128x128.png',
     badge: '/icons/icon-48x48.png',
     vibrate: [200, 100, 200],
-    data: {
-      url: '/'
-    }
+    data: { reminderId: data.reminderId }
   };
+  
+  // Добавляем кнопку "Отложить" только если это напоминание
+  if (data.reminderId) {
+    options.actions = [
+      { action: 'snooze', title: '⏰ Отложить на 5 минут' }
+    ];
+  }
   
   event.waitUntil(
     self.registration.showNotification(data.title, options)
   );
 });
 
-// Обработчик клика по уведомлению
+// ========== ОБРАБОТЧИК КЛИКА ПО УВЕДОМЛЕНИЮ (С КНОПКОЙ) ==========
 self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  event.waitUntil(
-    clients.openWindow('/')
-  );
+  const notification = event.notification;
+  const action = event.action;
+  
+  if (action === 'snooze') {
+    const reminderId = notification.data.reminderId;
+    
+    event.waitUntil(
+      fetch(`http://localhost:3001/snooze?reminderId=${reminderId}`, { 
+        method: 'POST' 
+      })
+        .then(() => {
+          console.log('✅ Напоминание отложено на 5 минут');
+          notification.close();
+        })
+        .catch(err => {
+          console.error('❌ Ошибка откладывания:', err);
+          notification.close();
+        })
+    );
+  } else {
+    // При клике на само уведомление открываем приложение
+    event.waitUntil(
+      clients.openWindow('/')
+    );
+    notification.close();
+  }
 });

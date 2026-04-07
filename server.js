@@ -13,13 +13,14 @@ const vapidKeys = {
 };
 
 webpush.setVapidDetails(
-  'mailto:jrserg0@gmail.com', // Замени на свой email
+  'mailto:your-email@example.com',
   vapidKeys.publicKey,
   vapidKeys.privateKey
 );
 
-// ========== ХРАНИЛИЩЕ ПОДПИСОК ==========
+// ========== ХРАНИЛИЩЕ ПОДПИСОК И НАПОМИНАНИЙ ==========
 let subscriptions = [];
+const reminders = new Map(); // key: reminderId, value: { timeoutId, text, reminderTime }
 
 // ========== EXPRESS НАСТРОЙКИ ==========
 const app = express();
@@ -41,6 +42,47 @@ app.post('/unsubscribe', (req, res) => {
   res.status(200).json({ message: 'Подписка удалена' });
 });
 
+// ========== ЭНДПОИНТ ДЛЯ ОТКЛАДЫВАНИЯ НАПОМИНАНИЯ ==========
+app.post('/snooze', (req, res) => {
+  const reminderId = parseInt(req.query.reminderId, 10);
+  
+  if (!reminderId || !reminders.has(reminderId)) {
+    return res.status(404).json({ error: 'Напоминание не найдено' });
+  }
+  
+  const reminder = reminders.get(reminderId);
+  
+  // Отменяем предыдущий таймер
+  clearTimeout(reminder.timeoutId);
+  
+  // Устанавливаем новый через 5 минут (300 000 мс)
+  const newDelay = 5 * 60 * 1000;
+  const newTimeoutId = setTimeout(() => {
+    const payload = JSON.stringify({
+      title: '⏰ Напоминание (отложенное)',
+      body: reminder.text,
+      reminderId: reminderId
+    });
+    
+    subscriptions.forEach(sub => {
+      webpush.sendNotification(sub, payload).catch(err => console.error('Push error:', err));
+    });
+    
+    reminders.delete(reminderId);
+    console.log(`✅ Отправлено отложенное напоминание ${reminderId}`);
+  }, newDelay);
+  
+  // Обновляем хранилище
+  reminders.set(reminderId, {
+    timeoutId: newTimeoutId,
+    text: reminder.text,
+    reminderTime: Date.now() + newDelay
+  });
+  
+  console.log(`⏰ Напоминание ${reminderId} отложено на 5 минут`);
+  res.status(200).json({ message: 'Напоминание отложено на 5 минут' });
+});
+
 // ========== SOCKET.IO ==========
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -52,27 +94,55 @@ const io = socketIo(server, {
 
 io.on('connection', (socket) => {
   console.log('🔌 Клиент подключён:', socket.id);
-
-  // Обработка события 'newTask' от клиента
+  
+  // Обычная задача (без напоминания)
   socket.on('newTask', (task) => {
     console.log('📝 Новая задача:', task.text);
-
-    // Рассылаем событие ВСЕМ подключённым клиентам
     io.emit('taskAdded', task);
-
-    // Отправляем push-уведомления всем подписанным клиентам
+    
+    // Push-уведомление о новой задаче
     const payload = JSON.stringify({
       title: 'Новая задача',
-      body: task.text
+      body: task.text,
+      reminderId: null
     });
-
+    
     subscriptions.forEach(sub => {
-      webpush.sendNotification(sub, payload).catch(err => {
-        console.error('❌ Ошибка push:', err);
-      });
+      webpush.sendNotification(sub, payload).catch(err => console.error('Push error:', err));
     });
   });
-
+  
+  // Задача с напоминанием
+  socket.on('newReminder', (reminder) => {
+    const { id, text, reminderTime } = reminder;
+    const delay = reminderTime - Date.now();
+    
+    if (delay <= 0) {
+      console.log('⚠️ Напоминание в прошлом, игнорируем');
+      return;
+    }
+    
+    console.log(`⏰ Запланировано напоминание "${text}" через ${Math.round(delay / 1000)} секунд`);
+    
+    // Сохраняем таймер
+    const timeoutId = setTimeout(() => {
+      const payload = JSON.stringify({
+        title: '⏰ Напоминание',
+        body: text,
+        reminderId: id
+      });
+      
+      subscriptions.forEach(sub => {
+        webpush.sendNotification(sub, payload).catch(err => console.error('Push error:', err));
+      });
+      
+      reminders.delete(id);
+      console.log(`✅ Отправлено напоминание ${id}: "${text}"`);
+    }, delay);
+    
+    reminders.set(id, { timeoutId, text, reminderTime });
+  });
+  
   socket.on('disconnect', () => {
     console.log('🔌 Клиент отключён:', socket.id);
   });

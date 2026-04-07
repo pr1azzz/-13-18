@@ -11,25 +11,59 @@ function loadNotes() {
   const notes = JSON.parse(localStorage.getItem('notes') || '[]');
   const notesList = document.getElementById('notes-list');
   if (notesList) {
-    notesList.innerHTML = notes.map(note => `<li>📌 ${note.text || note}</li>`).join('');
+    notesList.innerHTML = notes.map(note => {
+      let reminderInfo = '';
+      if (note.reminder) {
+        const date = new Date(note.reminder);
+        reminderInfo = `<br><small>⏰ Напоминание: ${date.toLocaleString()}</small>`;
+      }
+      return `
+        <li class="card" style="margin-bottom: 0.5rem; padding: 0.5rem;">
+          📌 ${note.text}
+          ${reminderInfo}
+        </li>
+      `;
+    }).join('');
   }
 }
 
+// Обычная заметка (без напоминания)
 function addNote(text) {
   const notes = JSON.parse(localStorage.getItem('notes') || '[]');
-  const newNote = { id: Date.now(), text: text, datetime: new Date().toLocaleString() };
+  const newNote = { id: Date.now(), text: text, reminder: null };
   notes.push(newNote);
   localStorage.setItem('notes', JSON.stringify(notes));
   loadNotes();
 
-  // 🚀 ОТПРАВЛЯЕМ СОБЫТИЕ ЧЕРЕЗ WEBSOCKET
-  socket.emit('newTask', { text: text });
+  // Отправляем событие через WebSocket
+  socket.emit('newTask', { text: text, timestamp: Date.now() });
+}
+
+// Заметка с напоминанием
+function addReminderNote(text, reminderTimestamp) {
+  const notes = JSON.parse(localStorage.getItem('notes') || '[]');
+  const newNote = { id: Date.now(), text: text, reminder: reminderTimestamp };
+  notes.push(newNote);
+  localStorage.setItem('notes', JSON.stringify(notes));
+  loadNotes();
+
+  // Отправляем событие на сервер для планирования push-уведомления
+  socket.emit('newReminder', {
+    id: newNote.id,
+    text: text,
+    reminderTime: reminderTimestamp
+  });
 }
 
 function initNotes() {
   const form = document.getElementById('note-form');
   const input = document.getElementById('note-input');
+  
+  const reminderForm = document.getElementById('reminder-form');
+  const reminderText = document.getElementById('reminder-text');
+  const reminderTime = document.getElementById('reminder-time');
 
+  // Обычная форма
   if (form) {
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -40,6 +74,27 @@ function initNotes() {
       }
     });
   }
+
+  // Форма с напоминанием
+  if (reminderForm) {
+    reminderForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = reminderText.value.trim();
+      const datetime = reminderTime.value;
+      
+      if (text && datetime) {
+        const timestamp = new Date(datetime).getTime();
+        if (timestamp > Date.now()) {
+          addReminderNote(text, timestamp);
+          reminderText.value = '';
+          reminderTime.value = '';
+        } else {
+          alert('⚠️ Дата напоминания должна быть в будущем');
+        }
+      }
+    });
+  }
+
   loadNotes();
 }
 
@@ -47,7 +102,6 @@ function initNotes() {
 socket.on('taskAdded', (task) => {
   console.log('📢 Задача от другого клиента:', task);
   
-  // Показываем всплывающее уведомление в приложении
   const notification = document.createElement('div');
   notification.textContent = `✨ Новая задача: ${task.text}`;
   notification.style.cssText = `
@@ -78,7 +132,7 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
-// ВАШ ПУБЛИЧНЫЙ VAPID КЛЮЧ (из терминала)
+// ⚠️ ЗАМЕНИ НА СВОЙ ПУБЛИЧНЫЙ VAPID КЛЮЧ (из практики №16)
 const VAPID_PUBLIC_KEY = 'BMywqffpmkeZHkDoFVoeceb8ryw9_cWj71oaYir-CjTXVeSgqMT_glOU3JWANun1hdGA0bR6Nrf9RE2fD9he7f0';
 
 async function subscribeToPush() {
